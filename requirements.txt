@@ -1,0 +1,6 @@
+# 依赖许可必须落在 MIT / Apache-2.0 / BSD / PostgreSQL（契约硬要求）
+fastapi==0.115.6          # MIT
+uvicorn[standard]==0.32.1  # BSD-3-Clause
+pydantic==2.10.4          # MIT
+asyncpg==0.30.0           # Apache-2.0  （刻意不用 psycopg：LGPL 不在白名单）
+httpx==0.28.1             # BSD-3-Clause

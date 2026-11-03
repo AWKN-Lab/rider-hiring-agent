@@ -1,0 +1,58 @@
+# 一键启动：docker compose up
+#   app        : FastAPI（契约 v1），:8077
+#   mock-model : 本地 OpenAI 兼容 mock（:8099），用于可复现的评测与自测
+#   postgres   : PostgreSQL 16 + pgvector（政策向量索引；驱动 asyncpg，Apache-2.0）
+#   redis      : Redis 7.2（会话/知识缓存）
+services:
+  postgres:
+    image: pgvector/pgvector:pg16          # PostgreSQL License
+    environment:
+      POSTGRES_USER: rider
+      POSTGRES_PASSWORD: rider
+      POSTGRES_DB: rider
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rider -d rider"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7.2-alpine                # BSD-3-Clause
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  mock-model:
+    build: .
+    command: ["python3", "-m", "app.mock_model", "--host", "0.0.0.0", "--port", "8099",
+              "--log", "/tmp/model_requests.jsonl"]
+    volumes:
+      - modellog:/tmp
+
+  app:
+    build: .
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      mock-model: {condition: service_started}
+    environment:
+      DATABASE_URL: postgresql://rider:rider@postgres:5432/rider
+      REDIS_URL: redis://redis:6379/0
+      MODEL_BASE_URL: http://mock-model:8099/v1/chat/completions
+      MODEL_NAME: mock-chat
+      MODEL_BACKUP_NAME: mock-chat-backup
+      MODEL_TIMEOUT: "5"
+      SQLITE_PATH: /app/data/rider_agent.db
+    ports:
+      - "8077:8077"
+    volumes:
+      - appdata:/app/data
+
+volumes:
+  pgdata:
+  modellog:
+  appdata:
