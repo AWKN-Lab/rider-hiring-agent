@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import json
 import hmac
+import hashlib
+import threading
 import re
 from typing import Any
 
@@ -32,11 +34,16 @@ class Api:
     def __init__(self, engine: ConversationEngine, store=None):
         self.engine = engine
         self.store = store
+        self._lock = threading.RLock()
         self.routes = {m + " " + p: h for m, p, h in C.ROUTES}
 
     # ── 派发 ──────────────────────────────────────────────────────────
     def dispatch(self, method: str, path: str, query: dict, body: dict,
                  headers: dict) -> tuple[int, dict]:
+        with self._lock:
+            return self._dispatch(method, path, query, body, headers)
+
+    def _dispatch(self, method, path, query, body, headers):
         clean = path.rstrip("/") or "/"
         for (m, p, h) in C.ROUTES:
             if m != method:
@@ -81,12 +88,17 @@ class Api:
 
     def _require_session(self, sid, headers):
         sess = self.engine.sessions.get(sid)
+        if sess is None and self.store:
+            sess = self.store.get_session(sid)
+            if sess is not None:
+                self.engine.sessions[sid] = sess
         if not sess:
             raise ApiError(C.E_UNKNOWN_SESSION, "session not found", status=404)
         token = headers.get("x-agent-session-token") or headers.get("x-session-token")
         if not token:
             raise ApiError(C.E_SESSION_TOKEN_REQUIRED, "session token required", status=401)
-        if not hmac.compare_digest(token.encode("utf-8"), sess.session_token.encode("utf-8")):
+        if not hmac.compare_digest(hashlib.sha256(token.encode()).hexdigest(),
+                                   sess.session_token_hash or hashlib.sha256(sess.session_token.encode()).hexdigest()):
             raise ApiError(C.E_SESSION_TOKEN_INVALID, "session token mismatch", status=403)
         return sess
 

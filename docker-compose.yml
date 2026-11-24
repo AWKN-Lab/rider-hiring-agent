@@ -48,7 +48,7 @@ services:
       MODEL_TIMEOUT: "5"
       SQLITE_PATH: /app/data/rider_agent.db
     ports:
-      - "8077:8077"
+      - "127.0.0.1:${AGENT_PORT:-8077}:8077"
     volumes:
       - appdata:/app/data
 

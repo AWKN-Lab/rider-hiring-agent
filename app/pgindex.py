@@ -1,78 +1,78 @@
-"""PostgreSQL 16 + pgvector 的政策向量索引（**可选路径**，有则用、无则回退）。
-
-许可：驱动用 **asyncpg（Apache-2.0）**；不引入 GPL/LGPL 依赖（契约硬要求）。
-回退策略：任何异常 ⇒ 退回进程内向量索引，**服务不中断**。
-"""
+"""PostgreSQL pgvector hybrid retrieval. Fail visibly on configured backend failure."""
 from __future__ import annotations
-
 import asyncio
-import os
-from typing import Optional
+import hashlib
+import json
+from .core import PolicyDoc, PolicyKB
 
 DDL = """
 CREATE EXTENSION IF NOT EXISTS vector;
-CREATE TABLE IF NOT EXISTS policy_doc (
-    id TEXT PRIMARY KEY,
-    city TEXT NOT NULL,
-    version TEXT NOT NULL,
-    title TEXT NOT NULL,
-    body TEXT NOT NULL,
-    keywords TEXT NOT NULL DEFAULT '',
-    embedding vector(256) NOT NULL
+CREATE TABLE IF NOT EXISTS agent_policy_doc (
+ id TEXT PRIMARY KEY, city TEXT NOT NULL, version TEXT NOT NULL,
+ title TEXT NOT NULL, body TEXT NOT NULL, keywords JSONB NOT NULL,
+ embedding vector(256) NOT NULL
 );
-CREATE INDEX IF NOT EXISTS policy_doc_embedding_idx
-    ON policy_doc USING hnsw (embedding vector_cosine_ops);
 """
-
+def vector(text):
+    return "[" + ",".join(str(x) for x in PolicyKB._embed_dense(text)) + "]"
 
 class PgPolicyIndex:
-    def __init__(self, dsn: str):
+    def __init__(self, dsn):
         self.dsn = dsn
-        self._conn = None
-        self.enabled = False
-        self.error: Optional[str] = None
-
-    def setup(self, docs) -> bool:
-        """建表 + 写入文档；成功则 enabled=True。"""
-        try:
-            async def _run():
-                import asyncpg
-                conn = await asyncpg.connect(self.dsn)
+    def run(self, fn):
+        async def work():
+            import asyncpg
+            conn = await asyncpg.connect(self.dsn, timeout=5, command_timeout=10)
+            try:
+                return await fn(conn)
+            finally:
+                await conn.close()
+        return asyncio.run(work())
+    def setup(self, docs):
+        async def work(conn):
+            async with conn.transaction():
                 await conn.execute(DDL)
                 for d in docs:
-                    vec = "[" + ",".join(str(x) for x in self._dense(d)) + "]"
                     await conn.execute(
-                        "INSERT INTO policy_doc (id, city, version, title, body, keywords, embedding) "
-                        "VALUES ($1,$2,$3,$4,$5,$6,$7::vector) "
-                        "ON CONFLICT (id) DO UPDATE SET embedding = EXCLUDED.embedding",
-                        d.id, d.city, d.version, d.title, d.text, " ".join(d.keywords), vec)
-                return conn
-            self._conn = asyncio.run(_run())
-            self.enabled = True
-            return True
-        except Exception as exc:
-            self.error = f"{type(exc).__name__}: {exc}"
-            return False
+                        """INSERT INTO agent_policy_doc VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::vector)
+                        ON CONFLICT(id) DO UPDATE SET city=excluded.city,version=excluded.version,
+                        title=excluded.title,body=excluded.body,keywords=excluded.keywords,embedding=excluded.embedding""",
+                        d.id,d.city,d.version,d.title,d.text,json.dumps(d.keywords),vector(d.text+" "+" ".join(d.keywords)))
+        self.run(work)
+    def search(self, query, city):
+        async def work(conn):
+            rows = await conn.fetch(
+                """SELECT id,city,version,title,body,keywords,1-(embedding <=> $1::vector) AS similarity
+                   FROM agent_policy_doc WHERE ($2::text IS NULL OR city=$2 OR city='ALL')""",
+                vector(query),city)
+            return [(PolicyDoc(r["id"],r["city"],r["version"],r["title"],r["body"],json.loads(r["keywords"])),r["similarity"]) for r in rows]
+        return self.run(work)
+    def ping(self):
+        async def work(conn):
+            return await conn.fetchval("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname='vector')")
+        return self.run(work)
 
-    def search(self, query: str, city: Optional[str], top_k: int = 3):
-        """pgvector 余弦检索（关键词侧由调用方合并）。失败则抛异常，由上层回退。"""
-        import asyncpg
-        vec = "[" + ",".join(str(x) for x in self._dense(query)) + "]"
-
-        async def _run():
-            rows = await self._conn.fetch(
-                "SELECT id, city, version, title, body, keywords, "
-                "1 - (embedding <=> $1::vector) AS score "
-                "FROM policy_doc WHERE ($2::text IS NULL OR city = $2 OR city = 'ALL') "
-                "ORDER BY embedding <=> $1::vector LIMIT $3",
-                vec, city, top_k)
-            return [dict(r) for r in rows]
-
-        return asyncio.run(_run())
-
-    def close(self):
-        if self._conn is not None:
-            try:
-                asyncio.run(self._conn.close())
-            except Exception:
-                pass
+class HybridPolicyKB(PolicyKB):
+    def __init__(self, docs, index, cache):
+        super().__init__(docs)
+        self.index, self.cache = index, cache
+        self.cache_namespace = hashlib.sha256(json.dumps([d.__dict__ for d in docs],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+        self.index.setup(docs)
+    def search(self, query, city=None, top_k=3):
+        key = "agent:policy:v1:"+self.cache_namespace+":"+hashlib.sha256(json.dumps([query,city,top_k],ensure_ascii=False).encode()).hexdigest()
+        cached = self.cache.get(key) if self.cache is not None else None
+        if cached is not None:
+            return [(PolicyDoc(**doc),score) for doc,score in json.loads(cached)]
+        scored=[]
+        for doc,similarity in self.index.search(query,city):
+            # Unknown policy requests must not pass on hash collisions alone.
+            kw=self._keyword_score(query,doc)
+            if kw <= 0:
+                continue
+            score=round(0.65*kw+0.35*max(0.0,similarity or 0.0),4)
+            scored.append((doc,score))
+        scored.sort(key=lambda x:(-x[1],x[0].id))
+        out=scored[:top_k]
+        if self.cache is not None:
+            self.cache.setex(key,60,json.dumps([(d.__dict__,s) for d,s in out],ensure_ascii=False))
+        return out

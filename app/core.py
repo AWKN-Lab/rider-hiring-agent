@@ -320,6 +320,7 @@ class Session:
     id: str
     created_at: float
     session_token: str = field(default_factory=lambda: secrets.token_urlsafe(32), repr=False)
+    session_token_hash: str = field(default="", repr=False)
     turns: list[dict] = field(default_factory=list)
     candidate: dict = field(default_factory=dict)
     slot_index: int = 0
@@ -458,6 +459,8 @@ class ConversationEngine:
         # 4) 抽取 + 填槽
         fields = self.extract(text, sess)
         for k, v in fields.items():
+            if k in ("area_text", "start_text", "experience_text") and isinstance(v, str):
+                v = self._scrub(v)
             if sess.candidate.get(k) in (None, ""):
                 sess.candidate[k] = v
         sess.candidate["updated_at"] = time.time()
