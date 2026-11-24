@@ -68,8 +68,9 @@ async def post_message(session_id: str, request: Request):
 
 
 @app.get("/api/v1/agent/sessions/{session_id}")
-def get_session(session_id: str):
-    status, payload = api.dispatch("GET", f"/api/v1/agent/sessions/{session_id}", {}, {}, {})
+def get_session(session_id: str, request: Request):
+    status, payload = api.dispatch("GET", f"/api/v1/agent/sessions/{session_id}", {}, {},
+                                   {k.lower(): v for k, v in request.headers.items()})
     return JSONResponse(payload, status_code=status)
 
 

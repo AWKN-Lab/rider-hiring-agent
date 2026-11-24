@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # (名称, 文件, 原片段, 变异片段, 要跑的命令)
 MUTATIONS = [
     ("关掉未成年终止", "app/core.py",
-     "            if age < MINOR_AGE:", "            if False:",
+     "            if months < MINOR_AGE * 12:", "            if False:",
      [sys.executable, "-m", "unittest", "discover", "-s", "tests"]),
     ("关掉送模型前的脱敏", "app/core.py",
      "        safe_text = self._scrub(text)",
@@ -52,6 +52,11 @@ def run(cmd, cwd: Path) -> tuple[int, str]:
 
 def main() -> int:
     caught, missed = [], []
+    for cmd in {tuple(row[4]) for row in MUTATIONS}:
+        code, out = run(list(cmd), ROOT)
+        if code != 0:
+            print("Baseline failed; mutation proof aborted")
+            return 1
     for name, rel, old, new, cmd in MUTATIONS:
         tmp = Path(tempfile.mkdtemp(prefix="mut-"))
         work = tmp / "repo"
@@ -59,8 +64,9 @@ def main() -> int:
             "__pycache__", ".git", "data", "eval/dataset"))
         target = work / rel
         text = target.read_text(encoding="utf-8")
-        if old not in text:
-            print(f"  ⚠️ {name}: 变异锚点没找到（跳过）")
+        if text.count(old) != 1:
+            missed.append(name)
+            print(f"  ❌ {name}: 变异锚点缺失或重复")
             shutil.rmtree(tmp, ignore_errors=True)
             continue
         target.write_text(text.replace(old, new, 1), encoding="utf-8")
@@ -79,7 +85,7 @@ def main() -> int:
 
     print(f"\n  变异 {len(MUTATIONS)} 个 → 抓住 {len(caught)} 个，漏 {len(missed)} 个")
     print(f"  结论: {'PASS（门禁会红，不是恒真断言）' if not missed else 'FAIL: ' + ', '.join(missed)}")
-    return 0 if not missed else 1
+    return 0 if not missed and len(caught) == len(MUTATIONS) else 1
 
 
 if __name__ == "__main__":

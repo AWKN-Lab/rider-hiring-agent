@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import hmac
 import re
 from typing import Any
 
@@ -74,20 +75,42 @@ class Api:
         sess = self.engine.create_session()
         if self.store:
             self.store.save_session(sess)
-        return 201, {"session_id": sess.id, "status": sess.status,
+        return 201, {"session_id": sess.id, "session_token": sess.session_token,
+                     "status": sess.status,
                      "candidate": self.engine._public_candidate(sess)}
+
+    def _require_session(self, sid, headers):
+        sess = self.engine.sessions.get(sid)
+        if not sess:
+            raise ApiError(C.E_UNKNOWN_SESSION, "session not found", status=404)
+        token = headers.get("x-agent-session-token") or headers.get("x-session-token")
+        if not token:
+            raise ApiError(C.E_SESSION_TOKEN_REQUIRED, "session token required", status=401)
+        if not hmac.compare_digest(token.encode("utf-8"), sess.session_token.encode("utf-8")):
+            raise ApiError(C.E_SESSION_TOKEN_INVALID, "session token mismatch", status=403)
+        return sess
 
     def handle_post_message(self, params, query, body, headers):
         sid = params["session_id"]
-        token = headers.get("x-agent-session-token") or headers.get("x-session-token")
-        if token is not None and token != sid:
-            raise ApiError(C.E_SESSION_TOKEN_INVALID, "session token mismatch", status=403)
+        self._require_session(sid, headers)
         text = (body or {}).get("text")
         if not isinstance(text, str) or not text.strip():
             raise ApiError(C.E_BAD_REQUEST, "text is required")
         out = self.engine.handle_message(sid, text)
         if "error" in out:
             raise ApiError(out["error"]["code"], out["error"]["message"], status=404)
+        # Buyer contract v1, applied to every successful message branch.
+        # Keep legacy collected/missing keys for existing clients.
+        candidate = out.get("candidate") or {}
+        fields = [key for key in C.SLOT_KEYS if candidate.get(key) not in (None, "")]
+        progress = dict(out.get("progress") or {})
+        progress.update(done=len(fields), total=len(C.SLOT_KEYS), fields=fields)
+        out["progress"] = progress
+        actions = list(out.get("actions") or [])
+        status = out.get("status")
+        if status in ("handoff", "end_minor") and status not in actions:
+            actions.append(status)
+        out["actions"] = actions
         if self.store:
             sess = self.engine.sessions.get(sid)
             if sess:
@@ -95,9 +118,7 @@ class Api:
         return 200, out
 
     def handle_get_session(self, params, query, body, headers):
-        sess = self.engine.sessions.get(params["session_id"])
-        if not sess:
-            raise ApiError(C.E_UNKNOWN_SESSION, "session not found", status=404)
+        sess = self._require_session(params["session_id"], headers)
         return 200, {"session_id": sess.id, "status": sess.status,
                      "candidate": self.engine._public_candidate(sess),
                      "turns": len(sess.turns)}

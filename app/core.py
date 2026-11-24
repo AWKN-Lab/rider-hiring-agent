@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import re
+import secrets
 import time
 import urllib.error
 import urllib.request
@@ -318,6 +319,7 @@ QUICK = {
 class Session:
     id: str
     created_at: float
+    session_token: str = field(default_factory=lambda: secrets.token_urlsafe(32), repr=False)
     turns: list[dict] = field(default_factory=list)
     candidate: dict = field(default_factory=dict)
     slot_index: int = 0
@@ -407,8 +409,19 @@ class ConversationEngine:
         if born:
             y, mth = born.split("-")
             now = time.localtime()
-            age = now.tm_year - int(y) - (1 if now.tm_mon > int(mth) else 0)
-            if age < MINOR_AGE:
+            months = (now.tm_year - int(y)) * 12 + now.tm_mon - int(mth)
+            if months < 0:
+                return {"reply": "出生年月不能晚于当前月份，请重新填写。",
+                        "quick_replies": [], "status": sess.status,
+                        "candidate": self._public_candidate(sess)}
+            # Birth month alone cannot establish the day of majority.
+            if months == MINOR_AGE * 12:
+                sess.status = "handoff"
+                sess.handoff_reason = "age_boundary_requires_human"
+                return {"reply": "目前仅凭出生年月无法确认已满18周岁，请联系人工核实。",
+                        "quick_replies": [], "status": "handoff", "handoff": True,
+                        "candidate": self._public_candidate(sess)}
+            if months < MINOR_AGE * 12:
                 sess.candidate["birth_ym"] = born
                 sess.status = "end_minor"
                 sess.turns.append({"text": text, "reply": "end_minor", "ts": time.time()})

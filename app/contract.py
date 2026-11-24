@@ -32,7 +32,7 @@ BOOKING_FIELDS = ["id", "candidate_id", "station_id", "slot_start",
 # ── 事件（outbox + Webhook，HMAC-SHA256 签名）─────────────────────────
 EVENT_TYPES = [
     "candidate.created", "candidate.updated", "candidate.completed",
-    "booking.created", "booking.cancelled", "handoff.created",
+    "booking.created", "booking.cancelled", "handoff.requested",
 ]
 
 # ── 任务 1 提供的接口 ─────────────────────────────────────────────────

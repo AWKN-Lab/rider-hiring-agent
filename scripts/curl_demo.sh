@@ -30,11 +30,12 @@ if ! kill -0 "$MOCK_PID" 2>/dev/null; then
   exit 3
 fi
 
-SID=$(curl -sS -X POST "$BASE/agent/sessions" -H 'Content-Type: application/json' -d '{}' \
-      | python3 -c 'import json,sys;print(json.load(sys.stdin)["session_id"])')
+SESSION_JSON=$(curl -fsS -X POST "$BASE/agent/sessions" -H 'Content-Type: application/json' -d '{}')
+SID=$(printf '%s' "$SESSION_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["session_id"])')
+TOKEN=$(printf '%s' "$SESSION_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["session_token"])')
 echo "session_id = $SID"
 for t in "我叫小王" "1995年3月" "住在望京小区" "我要全职" "我有电动车" "明天就能到" "跑过半年"; do
-  curl -sS -X POST "$BASE/agent/sessions/$SID/messages" -H 'Content-Type: application/json' \
+  curl -fsS -X POST "$BASE/agent/sessions/$SID/messages" -H "X-Session-Token: $TOKEN" -H 'Content-Type: application/json' \
        -d "{\"text\": \"$t\"}" > "$LAST_JSON"
   printf "  %-12s → progress %s\n" "$t" \
     "$(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));p=d.get("progress") or {};print(p.get("collected"),"/",p.get("total"))' "$LAST_JSON")"
