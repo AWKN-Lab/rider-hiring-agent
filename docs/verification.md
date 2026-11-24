@@ -64,3 +64,22 @@ python3 scripts/mutation_proof.py
 | FastAPI 层（`app/fastapi_app.py`）| **未在本机执行** | 同上（FastAPI 不可安装）；其路由与处理器复用 `app/api.py` 同一份实现，契约测试跑的就是它 |
 
 已在本机实跑并留证的是**同一份业务逻辑**的纯标准库路径（测试 / 评测 / curl / 变异自证）。
+
+## 复跑说明（2026-11-24 修订）：mock 端口可配 + 失败立即退出
+
+`scripts/curl_demo.sh` 原先把 mock 模型的端口**硬编码为 8099**。只要该端口被占用
+（本机实测就被别的进程占着），mock 起不来，而 API 侧会走内置兜底把 7 轮跑完，
+最后才在 `tail` 那一步炸掉 ⇒ 表现为"跑了一半"的假象，很难一眼看出是端口问题。
+
+现在：
+- `MOCK_PORT`（默认仍是 8099）与 `PORT`（默认 8077）都可配；
+- 中间产物（模型请求日志、最后一次响应）放在 `mktemp -d` 建的临时目录里，
+  不再共用 `/tmp/last.json`，并发复跑不会互相污染；
+- **fail fast**：mock 没起来就立刻以退出码 `3` 报错退出，不会半跑。
+
+```bash
+# 端口可用时（默认）
+bash scripts/curl_demo.sh
+# 端口被占用时
+MOCK_PORT=8098 PORT=8078 bash scripts/curl_demo.sh
+```
